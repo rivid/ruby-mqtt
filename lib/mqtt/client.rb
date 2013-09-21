@@ -101,6 +101,8 @@ class MQTT::Client
     @last_pingresp = Time.now
     @socket = nil
     @read_queue = Queue.new
+    @persist_storage = Array.new
+    @last_persistcheck = Time.now
     @read_thread = nil
     @write_semaphore = Mutex.new
   end
@@ -195,9 +197,33 @@ class MQTT::Client
       :payload => payload,
       :message_id => @message_id.next
     )
+    #FIXME: should message_id increase here?
+    @message_id = @message_id.next
 
     # Send the packet
     send_packet(packet)
+    # fix for qos 1 and 2
+    unless 0 == qos
+      # persist the packet
+      @persist_storage.push(packet)
+      #p @persist_storage
+    end
+  end
+  
+  # Resend a message on a particular topic to the MQTT broker.
+  def resend(packet)
+    packet.duplicate = true
+    # Send the packet
+    send_packet(packet)
+  end
+  
+  def persist_check
+    until @persist_storage.empty?
+      @persist_storage.each do |packet|
+        resend packet
+      end
+      @last_persistcheck = Time.now
+    end
   end
 
   # Send a subscribe message for one or more topics on the MQTT broker.
@@ -283,9 +309,27 @@ private
           @read_queue.push(packet)
         else
           # Ignore all other packets
+          if packet.class == MQTT::Packet::Puback
+            #
+            @persist_storage.delete_if {|x| x.message_id == packet.message_id}
+            #puts @persist_storage
+          elsif packet.class == MQTT::Packet::Pubrec
+            packet_pubrel = MQTT::Packet::Pubrel.new(:qos=>1,:message_id=>packet.message_id)
+            send_packet packet_pubrel
+            @persist_storage.delete_if {|x| x.message_id == packet.message_id}
+            @persist_storage.push(packet_pubrel)
+          elsif packet.class == MQTT::Packet::Pubcomp
+            @persist_storage.delete_if {|x| x.message_id == packet.message_id}
+          end
           nil
           # FIXME: implement responses for QOS 1 and 2
         end
+      end
+      
+      # Time to resend qos > 0 publish in persist storage?
+      if Time.now > @last_persistcheck + @keep_alive
+        # FIXME: resend packet if any
+        persist_check
       end
 
       # Time to send a keep-alive ping request?
