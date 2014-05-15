@@ -33,10 +33,10 @@ Synopsis
     end
 
 
-Limitations
+Improvements
 -----------
 
- * Only QOS 0 currently supported
+ * Qos 0, 1 and 2 are supported
 
 
 Resources
